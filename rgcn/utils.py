@@ -87,12 +87,12 @@ def r2e(triplets, num_rels):
         r_to_e[rel].add(dst)
         r_to_e[rel+num_rels].add(src)
         r_to_e[rel+num_rels].add(dst)
-    r_len = []
-    e_idx = []
+    r_len = []  # 关系长度
+    e_idx = [] # 关系实体索引列表
     idx = 0
     for r in uniq_r:
-        r_len.append((idx,idx+len(r_to_e[r])))
-        e_idx.extend(list(r_to_e[r]))
+        r_len.append((idx,idx+len(r_to_e[r])))  # 为每个唯一关系创建一个元组，表示该关系和相关实体在e_idx 列表中的起始和结束索引
+        e_idx.extend(list(r_to_e[r]))  #
         idx += len(r_to_e[r])
     return uniq_r, r_len, e_idx
 
@@ -114,7 +114,7 @@ def build_sub_graph(num_nodes, num_rels, triples, use_cuda, gpu):
         return norm
 
     src, rel, dst = triples.transpose()
-    src, dst = np.concatenate((src, dst)), np.concatenate((dst, src))
+    src, dst = np.concatenate((src, dst)), np.concatenate((dst, src))  # 使得具有双向关系
     rel = np.concatenate((rel, rel + num_rels))
 
     g = dgl.DGLGraph()
@@ -236,15 +236,17 @@ def append_object(e1, e2, r, d):
     d[e1][r].add(e2)
 
 
-def add_subject(e1, e2, r, d, num_rel):
+def add_subject(e1, e2, r, d, num_rel):  # s,o,r
+    # 为每个（r,o） 存储s
     if not e2 in d:
         d[e2] = {}
     if not r+num_rel in d[e2]:
-        d[e2][r+num_rel] = set()
+        d[e2][r+num_rel] = set()  # 使用反向关系，是为了在查询时能快速找到所有的对象 ’o‘
     d[e2][r+num_rel].add(e1)
 
 
-def add_object(e1, e2, r, d, num_rel):
+def add_object(e1, e2, r, d, num_rel):  # s,o,r
+    # 为每个（s,r） 存储o
     if not e1 in d:
         d[e1] = {}
     if not r in d[e1]:
@@ -266,6 +268,7 @@ def load_all_answers(total_data, num_rel):
 def load_all_answers_for_filter(total_data, num_rel, rel_p=False):
     # store subjects for all (rel, object) queries and
     # objects for all (subject, rel) queries
+    # rel_p 是否考虑关系方向
     def add_relation(e1, e2, r, d):
         if not e1 in d:
             d[e1] = {}
@@ -276,12 +279,12 @@ def load_all_answers_for_filter(total_data, num_rel, rel_p=False):
     all_ans = {}
     for line in total_data:
         s, r, o = line[: 3]
-        if rel_p:
+        if rel_p:  # 考虑s,o 的双向关系
             add_relation(s, o, r, all_ans)
             add_relation(o, s, r + num_rel, all_ans)
         else:
-            add_subject(s, o, r, all_ans, num_rel=num_rel)
-            add_object(s, o, r, all_ans, num_rel=0)
+            add_subject(s, o, r, all_ans, num_rel=num_rel)  # o,r 的反向关系
+            add_object(s, o, r, all_ans, num_rel=0)  # s,r 的正向关系
     return all_ans
 
 
@@ -306,39 +309,39 @@ def load_all_answers_for_time_filter(total_data, num_rels, num_nodes, rel_p=Fals
     return all_ans_list
 
 def split_by_time(data):
-    snapshot_list = []
-    snapshot = []
-    snapshots_num = 0
-    latest_t = 0
-    for i in range(len(data)):
+    snapshot_list = []  # 用于存储所有快照的泪飙
+    snapshot = []  # 当前快照的临时列表
+    snapshots_num = 0  # 计数快照的数量
+    latest_t = 0  # 记录上一个三元组发生的时间，用于判断时间戳是否变化
+    for i in range(len(data)):  # 遍历数据集中每一个四元组
         t = data[i][3]
         train = data[i]
         # latest_t表示读取的上一个三元组发生的时刻，要求数据集中的三元组是按照时间发生顺序排序的
-        if latest_t != t:  # 同一时刻发生的三元组
+        if latest_t != t:  # 同一时刻发生的三元组，判断当前时间戳是否与上一个时间戳不同，如果时间戳不同，将当前快照存入snapshot_list 并重置snapshot
             # show snapshot
             latest_t = t
             if len(snapshot):
                 snapshot_list.append(np.array(snapshot).copy())
                 snapshots_num += 1
             snapshot = []
-        snapshot.append(train[:3])
+        snapshot.append(train[:3])  # 添加三元组，到当前快照
     # 加入最后一个shapshot
-    if len(snapshot) > 0:
+    if len(snapshot) > 0:  # 添加最后一个快照
         snapshot_list.append(np.array(snapshot).copy())
         snapshots_num += 1
 
-    union_num = [1]
-    nodes = []
-    rels = []
+    union_num = [1]  # 初始化联合概率
+    nodes = []  # 节点数量列表
+    rels = []  # 关系数量列表
     for snapshot in snapshot_list:
-        uniq_v, edges = np.unique((snapshot[:,0], snapshot[:,2]), return_inverse=True)  # relabel
-        uniq_r = np.unique(snapshot[:,1])
-        edges = np.reshape(edges, (2, -1))
-        nodes.append(len(uniq_v))
-        rels.append(len(uniq_r)*2)
+        uniq_v, edges = np.unique((snapshot[:,0], snapshot[:,2]), return_inverse=True)  # relabel，重新标记节点
+        uniq_r = np.unique(snapshot[:,1])  # 提取唯一关系
+        edges = np.reshape(edges, (2, -1))  # 重置形状边的索引
+        nodes.append(len(uniq_v))  # 记录节点数量
+        rels.append(len(uniq_r)*2)  # 记录关系数量（*2表示每个关系双向）
     print("# Sanity Check:  ave node num : {:04f}, ave rel num : {:04f}, snapshots num: {:04d}, max edges num: {:04d}, min edges num: {:04d}, max union rate: {:.4f}, min union rate: {:.4f}"
           .format(np.average(np.array(nodes)), np.average(np.array(rels)), len(snapshot_list), max([len(_) for _ in snapshot_list]), min([len(_) for _ in snapshot_list]), max(union_num), min(union_num)))
-    return snapshot_list
+    return snapshot_list  # 返回快照列表
 
 
 def slide_list(snapshots, k=1):

@@ -105,6 +105,7 @@ def test(model, history_list, test_list, num_rels, num_nodes, use_cuda, all_ans_
     mrr_filter_r = utils.stat_ranks(ranks_filter_r, "filter_rel")
     return mrr_raw, mrr_filter, mrr_raw_r, mrr_filter_r
 
+from datetime import datetime
 
 def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=None):
     # load configuration for grid search the best configuration
@@ -135,7 +136,10 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
     model_name = "{}-{}-{}-ly{}-dilate{}-his{}-weight:{}-discount:{}-angle:{}-dp{}|{}|{}|{}-gpu{}"\
         .format(args.dataset, args.encoder, args.decoder, args.n_layers, args.dilate_len, args.train_history_len, args.weight, args.discount, args.angle,
                 args.dropout, args.input_dropout, args.hidden_dropout, args.feat_dropout, args.gpu)
+    format_str = "%Y-%m-%d-%H-%M-%S"
+    model_name = f"{args.dataset}_{datetime.now().strftime(format_str)}"
     model_state_file = '../models/' + model_name
+    model_state_file = os.path.join(os.path.dirname(__file__), model_state_file)
     print("Sanity Check: stat name : {}".format(model_state_file))
     print("Sanity Check: Is cuda available ? {}".format(torch.cuda.is_available()))
 
@@ -408,7 +412,7 @@ if __name__ == '__main__':
             sys.exit(0)
         grid = hp_range[hyperparameters[0]]
         for hp in hyperparameters[1:]:
-            grid = itertools.product(grid, hp_range[hp])
+            grid = itertools.product(grid, hp_range[hp])  # 生成可迭代对象的笛卡尔积，所有可能的元素组合
         hits_at_1s = {}
         hits_at_10s = {}
         mrrs = {}
