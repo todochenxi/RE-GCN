@@ -3,7 +3,6 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import numpy as np
 
 # from rgcn.layers import RGCNBlockLayer as RGCNLayer
 from rgcn.layers import UnionRGCNLayer, RGCNBlockLayer
@@ -14,11 +13,11 @@ from src.decoder import ConvTransE, ConvTransR
 class RGCNCell(BaseRGCN):
     def build_hidden_layer(self, idx):
         act = F.rrelu
-        if idx:
+        if idx:  # 如果不是第一层
             self.num_basis = 0
         print("activate function: {}".format(act))
         if self.skip_connect:
-            sc = False if idx == 0 else True
+            sc = False if idx == 0 else True  # 当前层不是第一个隐藏层
         else:
             sc = False
         if self.encoder_name == "uvrgcn":
@@ -34,14 +33,13 @@ class RGCNCell(BaseRGCN):
             g.ndata['h'] = init_ent_emb[node_id]
             x, r = init_ent_emb, init_rel_emb
             for i, layer in enumerate(self.layers):
-                layer(g, [], r[i])
-            return g.ndata.pop('h')
+                layer(g, [], r[i])  # UnionRGCNLayer的forword 参数，g, prev_h, rel_emb
+            return g.ndata.pop('h')  # 返回图的节点数据h，并从图数据中删除h
         else:
             if self.features is not None:
                 print("----------------Feature is not None, Attention ------------")
                 g.ndata['id'] = self.features
-            node_id = g.ndata['id'].squeeze()
-            g.ndata['h'] = init_ent_emb[node_id]
+
             if self.skip_connect:
                 prev_h = []
                 for layer in self.layers:
@@ -156,7 +154,7 @@ class RecurrentRGCN(nn.Module):
 
         for i, g in enumerate(g_list):
             g = g.to(self.gpu)
-            temp_e = self.h[g.r_to_e]
+            temp_e = self.h[g.r_to_e]  # 存储了与当前图中关系关联的实体嵌入
             x_input = torch.zeros(self.num_rels * 2, self.h_dim).float().cuda() if use_cuda else torch.zeros(self.num_rels * 2, self.h_dim).float()
             for span, r_idx in zip(g.r_len, g.uniq_r):
                 x = temp_e[span[0]:span[1],:]

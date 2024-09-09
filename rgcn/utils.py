@@ -11,6 +11,8 @@ from tqdm import tqdm
 import rgcn.knowledge_graph as knwlgrh
 from collections import defaultdict
 
+from rgcn.pos_encoder import lap_positional_encoding_tkg, rw_positional_encoding_tkg
+
 
 #######################################################################
 #
@@ -25,7 +27,7 @@ def sort_and_rank(score, target):
     return indices
 
 
-#TODO filer by groud truth in the same time snapshot not all ground truth
+# TODO filer by groud truth in the same time snapshot not all ground truth
 def sort_and_rank_time_filter(batch_a, batch_r, score, target, total_triplets):
     _, indices = torch.sort(score, dim=1, descending=True)
     indices = torch.nonzero(indices == target.view(-1, 1))
@@ -60,6 +62,7 @@ def filter_score(test_triples, score, all_ans):
         score[_][ans] = -10000000  #
     return score
 
+
 def filter_score_r(test_triples, score, all_ans):
     if all_ans is None:
         return score
@@ -79,22 +82,27 @@ def r2e(triplets, num_rels):
     src, rel, dst = triplets.transpose()
     # get all relations
     uniq_r = np.unique(rel)
-    uniq_r = np.concatenate((uniq_r, uniq_r+num_rels))
+    uniq_r = np.concatenate((uniq_r, uniq_r + num_rels))
     # generate r2e
     r_to_e = defaultdict(set)
     for j, (src, rel, dst) in enumerate(triplets):
         r_to_e[rel].add(src)
         r_to_e[rel].add(dst)
-        r_to_e[rel+num_rels].add(src)
-        r_to_e[rel+num_rels].add(dst)
+        r_to_e[rel + num_rels].add(src)
+        r_to_e[rel + num_rels].add(dst)
     r_len = []  # 关系长度
-    e_idx = [] # 关系实体索引列表
+    e_idx = []  # 关系实体索引列表
     idx = 0
     for r in uniq_r:
-        r_len.append((idx,idx+len(r_to_e[r])))  # 为每个唯一关系创建一个元组，表示该关系和相关实体在e_idx 列表中的起始和结束索引
-        e_idx.extend(list(r_to_e[r]))  #
+        r_len.append((idx, idx + len(r_to_e[r])))  # 为每个唯一关系创建一个元组，表示该关系和相关实体在e_idx 列表中的起始和结束索引
+        e_idx.extend(list(r_to_e[r]))  # 获取每个关系对应的实体的长度
         idx += len(r_to_e[r])
     return uniq_r, r_len, e_idx
+
+
+
+
+import time
 
 
 def build_sub_graph(num_nodes, num_rels, triples, use_cuda, gpu):
@@ -107,33 +115,39 @@ def build_sub_graph(num_nodes, num_rels, triples, use_cuda, gpu):
     :param use_cuda:
     :return:
     """
+
+    # st = time.time()
     def comp_deg_norm(g):
-        in_deg = g.in_degrees(range(g.number_of_nodes())).float()
-        in_deg[torch.nonzero(in_deg == 0).view(-1)] = 1
-        norm = 1.0 / in_deg
+        in_deg = g.in_degrees(range(g.number_of_nodes())).float()  # 计算图中每个节点中的入度
+        in_deg[torch.nonzero(in_deg == 0).view(-1)] = 1  # 将入度为0的节点的入度设为1
+        norm = 1.0 / in_deg  # 对节点的度数归一化
         return norm
 
     src, rel, dst = triples.transpose()
-    src, dst = np.concatenate((src, dst)), np.concatenate((dst, src))  # 使得具有双向关系
-    rel = np.concatenate((rel, rel + num_rels))
+    src, dst = np.concatenate((src, dst)), np.concatenate((dst, src))  # 使得具有双向关系，创建一个双向图，即每条边都会有两个方向
+    rel = np.concatenate((rel, rel + num_rels))  # 对应不同方向的边
 
-    g = dgl.DGLGraph()
-    g.add_nodes(num_nodes)
-    g.add_edges(src, dst)
-    norm = comp_deg_norm(g)
-    node_id = torch.arange(0, num_nodes, dtype=torch.long).view(-1, 1)
-    g.ndata.update({'id': node_id, 'norm': norm.view(-1, 1)})
-    g.apply_edges(lambda edges: {'norm': edges.dst['norm'] * edges.src['norm']})
-    g.edata['type'] = torch.LongTensor(rel)
+    # g = dgl.DGLGraph()
+    # g.add_nodes(num_nodes)
+    # g.add_edges(src, dst)
+    g = dgl.graph((src, dst), num_nodes=num_nodes)
+    norm = comp_deg_norm(g)  # 计算节点的度数归一化因子
+    node_id = torch.arange(0, num_nodes, dtype=torch.long).view(-1, 1)  # 创建一个包含从0到 num_node-1 的节点ID张量，并将其变形为列向量
+    g.ndata.update({'id': node_id, 'norm': norm.view(-1, 1)})  # 将节点ID和归一化因子作为节点特征存储在途中
+    g.apply_edges(lambda edges: {'norm': edges.dst['norm'] * edges.src['norm']})  # 更新每条边的归一化因子为其目标节点和源节点归一化因子的乘积
+    g.edata['type'] = torch.LongTensor(rel)  # 将边的关系类型作为边特征存储在图中
 
     uniq_r, r_len, r_to_e = r2e(triples, num_rels)
     g.uniq_r = uniq_r
     g.r_to_e = r_to_e
     g.r_len = r_len
     if use_cuda:
-        g = g.to(gpu) 
+        g = g.to(gpu)
         g.r_to_e = torch.from_numpy(np.array(r_to_e))
+    # print(time.time() - st, "time for build sub graph")
+    g = rw_positional_encoding_tkg(g, 3)
     return g
+
 
 def get_total_rank(test_triples, score, all_ans, eval_bz, rel_predict=0):
     num_triples = len(test_triples)
@@ -145,7 +159,7 @@ def get_total_rank(test_triples, score, all_ans, eval_bz, rel_predict=0):
         batch_end = min(num_triples, (idx + 1) * eval_bz)
         triples_batch = test_triples[batch_start:batch_end, :]
         score_batch = score[batch_start:batch_end, :]
-        if rel_predict==1:
+        if rel_predict == 1:
             target = test_triples[batch_start:batch_end, 1]
         elif rel_predict == 2:
             target = test_triples[batch_start:batch_end, 0]
@@ -161,7 +175,7 @@ def get_total_rank(test_triples, score, all_ans, eval_bz, rel_predict=0):
 
     rank = torch.cat(rank)
     filter_rank = torch.cat(filter_rank)
-    rank += 1 # change to 1-indexed
+    rank += 1  # change to 1-indexed
     filter_rank += 1
     mrr = torch.mean(1.0 / rank.float())
     filter_mrr = torch.mean(1.0 / filter_rank.float())
@@ -188,6 +202,7 @@ def flatten(l):
         else:
             flatten_l.append(c)
     return flatten_l
+
 
 def UnionFindSet(m, edges):
     """
@@ -228,6 +243,7 @@ def UnionFindSet(m, edges):
             count -= 1
     return count
 
+
 def append_object(e1, e2, r, d):
     if not e1 in d:
         d[e1] = {}
@@ -240,9 +256,9 @@ def add_subject(e1, e2, r, d, num_rel):  # s,o,r
     # 为每个（r,o） 存储s
     if not e2 in d:
         d[e2] = {}
-    if not r+num_rel in d[e2]:
-        d[e2][r+num_rel] = set()  # 使用反向关系，是为了在查询时能快速找到所有的对象 ’o‘
-    d[e2][r+num_rel].add(e1)
+    if not r + num_rel in d[e2]:
+        d[e2][r + num_rel] = set()  # 使用反向关系，是为了在查询时能快速找到所有的对象 ’o‘
+    d[e2][r + num_rel].add(e1)
 
 
 def add_object(e1, e2, r, d, num_rel):  # s,o,r
@@ -308,6 +324,7 @@ def load_all_answers_for_time_filter(total_data, num_rels, num_nodes, rel_p=Fals
     # return output_label_list
     return all_ans_list
 
+
 def split_by_time(data):
     snapshot_list = []  # 用于存储所有快照的泪飙
     snapshot = []  # 当前快照的临时列表
@@ -334,13 +351,16 @@ def split_by_time(data):
     nodes = []  # 节点数量列表
     rels = []  # 关系数量列表
     for snapshot in snapshot_list:
-        uniq_v, edges = np.unique((snapshot[:,0], snapshot[:,2]), return_inverse=True)  # relabel，重新标记节点
-        uniq_r = np.unique(snapshot[:,1])  # 提取唯一关系
+        uniq_v, edges = np.unique((snapshot[:, 0], snapshot[:, 2]), return_inverse=True)  # relabel，重新标记节点
+        uniq_r = np.unique(snapshot[:, 1])  # 提取唯一关系
         edges = np.reshape(edges, (2, -1))  # 重置形状边的索引
         nodes.append(len(uniq_v))  # 记录节点数量
-        rels.append(len(uniq_r)*2)  # 记录关系数量（*2表示每个关系双向）
-    print("# Sanity Check:  ave node num : {:04f}, ave rel num : {:04f}, snapshots num: {:04d}, max edges num: {:04d}, min edges num: {:04d}, max union rate: {:.4f}, min union rate: {:.4f}"
-          .format(np.average(np.array(nodes)), np.average(np.array(rels)), len(snapshot_list), max([len(_) for _ in snapshot_list]), min([len(_) for _ in snapshot_list]), max(union_num), min(union_num)))
+        rels.append(len(uniq_r) * 2)  # 记录关系数量（*2表示每个关系双向）
+    print(
+        "# Sanity Check:  ave node num : {:04f}, ave rel num : {:04f}, snapshots num: {:04d}, max edges num: {:04d}, min edges num: {:04d}, max union rate: {:.4f}, min union rate: {:.4f}"
+        .format(np.average(np.array(nodes)), np.average(np.array(rels)), len(snapshot_list),
+                max([len(_) for _ in snapshot_list]), min([len(_) for _ in snapshot_list]), max(union_num),
+                min(union_num)))
     return snapshot_list  # 返回快照列表
 
 
@@ -353,9 +373,8 @@ def slide_list(snapshots, k=1):
     k = k  # k=1 需要取长度k的历史，在加1长度的label
     if k > len(snapshots):
         print("ERROR: history length exceed the length of snapshot: {}>{}".format(k, len(snapshots)))
-    for _ in tqdm(range(len(snapshots)-k+1)):
-        yield snapshots[_: _+k]
-
+    for _ in tqdm(range(len(snapshots) - k + 1)):
+        yield snapshots[_: _ + k]
 
 
 def load_data(dataset, bfs_level=3, relabel=False):
@@ -363,14 +382,16 @@ def load_data(dataset, bfs_level=3, relabel=False):
         return knwlgrh.load_entity(dataset, bfs_level, relabel)
     elif dataset in ['FB15k', 'wn18', 'FB15k-237']:
         return knwlgrh.load_link(dataset)
-    elif dataset in ['ICEWS18', 'ICEWS14', "GDELT", "SMALL", "ICEWS14s", "ICEWS05-15","YAGO",
+    elif dataset in ['ICEWS18', 'ICEWS14', "GDELT", "SMALL", "ICEWS14s", "ICEWS05-15", "YAGO",
                      "WIKI"]:
         return knwlgrh.load_from_local("../data", dataset)
     else:
         raise ValueError('Unknown dataset: {}'.format(dataset))
 
+
 def construct_snap(test_triples, num_nodes, num_rels, final_score, topK):
     sorted_score, indices = torch.sort(final_score, dim=1, descending=True)
+    print(sorted_score.shape, indices.shape, "indices.shape")
     top_indices = indices[:, :topK]
     predict_triples = []
     for _ in range(len(test_triples)):
@@ -379,14 +400,16 @@ def construct_snap(test_triples, num_nodes, num_rels, final_score, topK):
             if r < num_rels:
                 predict_triples.append([test_triples[_][0], r, index])
             else:
-                predict_triples.append([index, r-num_rels, test_triples[_][0]])
+                predict_triples.append([index, r - num_rels, test_triples[_][0]])
 
     # 转化为numpy array
     predict_triples = np.array(predict_triples, dtype=int)
     return predict_triples
 
+
 def construct_snap_r(test_triples, num_nodes, num_rels, final_score, topK):
     sorted_score, indices = torch.sort(final_score, dim=1, descending=True)
+    print(sorted_score.shape, indices.shape, "indices.shape")
     top_indices = indices[:, :topK]
     predict_triples = []
     # for _ in range(len(test_triples)):
@@ -400,10 +423,10 @@ def construct_snap_r(test_triples, num_nodes, num_rels, final_score, topK):
             h, t = test_triples[_][0], test_triples[_][2]
             if index < num_rels:
                 predict_triples.append([h, index, t])
-                #predict_triples.append([t, index+num_rels, h])
+                # predict_triples.append([t, index+num_rels, h])
             else:
-                predict_triples.append([t, index-num_rels, h])
-                #predict_triples.append([t, index-num_rels, h])
+                predict_triples.append([t, index - num_rels, h])
+                # predict_triples.append([t, index-num_rels, h])
 
     # 转化为numpy array
     predict_triples = np.array(predict_triples, dtype=int)
@@ -426,10 +449,12 @@ def dilate_input(input_list, dilate_len):
     dilate_input_list = [np.unique(_, axis=0) for _ in dilate_input_list]
     return dilate_input_list
 
+
 def emb_norm(emb, epo=0.00001):
-    x_norm = torch.sqrt(torch.sum(emb.pow(2), dim=1))+epo
-    emb = emb/x_norm.view(-1,1)
+    x_norm = torch.sqrt(torch.sum(emb.pow(2), dim=1)) + epo
+    emb = emb / x_norm.view(-1, 1)
     return emb
+
 
 def shuffle(data, labels):
     shuffle_idx = np.arange(len(data))

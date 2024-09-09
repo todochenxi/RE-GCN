@@ -29,6 +29,7 @@ from collections import defaultdict
 from rgcn.knowledge_graph import _read_triplets_as_list
 # os.environ['KMP_DUPLICATE_LIB_OK']='True'
 
+# torch.manual_seed(3407)
 
 def test(model, history_list, test_list, num_rels, num_nodes, use_cuda, all_ans_list, all_ans_r_list, model_name, static_graph, mode):
     """
@@ -138,8 +139,10 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
                 args.dropout, args.input_dropout, args.hidden_dropout, args.feat_dropout, args.gpu)
     format_str = "%Y-%m-%d-%H-%M-%S"
     model_name = f"{args.dataset}_{datetime.now().strftime(format_str)}"
+    # model_name = "ICEWS14s_2024-08-28-19-25-27"
     model_state_file = '../models/' + model_name
     model_state_file = os.path.join(os.path.dirname(__file__), model_state_file)
+
     print("Sanity Check: stat name : {}".format(model_state_file))
     print("Sanity Check: Is cuda available ? {}".format(torch.cuda.is_available()))
 
@@ -233,9 +236,13 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
                                         train_sample_num]
 
                 # generate history graph
+                st0 = time.time()
                 history_glist = [build_sub_graph(num_nodes, num_rels, snap, use_cuda, args.gpu) for snap in input_list]
+                # print("Time for build history graph: ", time.time()-st0)
+                st0 = time.time()
                 output = [torch.from_numpy(_).long().cuda() for _ in output] if use_cuda else [torch.from_numpy(_).long() for _ in output]
                 loss_e, loss_r, loss_static = model.get_loss(history_glist, output[0], static_graph, use_cuda)
+                # print("Time for get loss: ", time.time()-st0)
                 loss = args.task_weight*loss_e + (1-args.task_weight)*loss_r + loss_static
 
                 losses.append(loss.item())

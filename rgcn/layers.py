@@ -164,14 +164,22 @@ class RGCNBlockLayer(RGCNLayer):
             self.num_rels, self.num_bases * self.submat_in * self.submat_out))
         nn.init.xavier_uniform_(self.weight, gain=nn.init.calculate_gain('relu'))
 
+        self.embedding_hp = nn.Linear(in_feat + 3, self.out_feat)
+
+
     def msg_func(self, edges):
         weight = self.weight.index_select(0, edges.data['type']).view(
                     -1, self.submat_in, self.submat_out)    # [edge_num, submat_in, submat_out]
-        node = edges.src['h'].view(-1, 1, self.submat_in)   # [edge_num * num_bases, 1, submat_in]->
+           # [edge_num * num_bases, 1, submat_in]->
+        p = edges.src["p"]
+        # edges.src['h'] = self.embedding_hp(torch.cat((edges.src['h'], p), dim=1))
+        node = edges.src['h'].view(-1, 1, self.submat_in)
         msg = torch.bmm(node, weight).view(-1, self.out_feat)   # [edge_num, out_feat]
         return {'msg': msg}
 
     def propagate(self, g):
+        # print("static embed----------------------")
+
         g.update_all(self.msg_func, fn.sum(msg='msg', out='h'), self.apply_func)
         # g.updata_all ({'msg': msg} , fn.sum(msg='msg', out='h'), {'h': nodes.data['h'] * nodes.data[''norm]})
 
@@ -200,8 +208,10 @@ class UnionRGCNLayer(nn.Module):
         nn.init.xavier_uniform_(self.weight_neighbor, gain=nn.init.calculate_gain('relu'))
 
         if self.self_loop:
+            # 传统的自连接权重矩阵，在每个时间步都会对节点的自连接特征进行线性变换（入度大于0才进行处理）
             self.loop_weight = nn.Parameter(torch.Tensor(in_feat, out_feat))
             nn.init.xavier_uniform_(self.loop_weight, gain=nn.init.calculate_gain('relu'))
+            # 演化的自连接权重矩阵，默认对所有节点的特征进行线性变换
             self.evolve_loop_weight = nn.Parameter(torch.Tensor(in_feat, out_feat))
             nn.init.xavier_uniform_(self.evolve_loop_weight, gain=nn.init.calculate_gain('relu'))
 
@@ -216,7 +226,11 @@ class UnionRGCNLayer(nn.Module):
         else:
             self.dropout = None
 
+        self.embedding_hp = nn.Linear(self.in_feat + 3, self.out_feat)
+
     def propagate(self, g):
+        # 消息传递，聚合，特征更新
+        # msg=msg 指聚合的消息来自msg_fun 返回的消息 msg中，聚合结构存储在目标节点的特征 h中
         g.update_all(lambda x: self.msg_func(x), fn.sum(msg='msg', out='h'), self.apply_func)
 
     def forward(self, g, prev_h, emb_rel):
@@ -227,8 +241,8 @@ class UnionRGCNLayer(nn.Module):
             #loop_message = torch.mm(g.ndata['h'], self.loop_weight)
             # masked_index = torch.masked_select(torch.arange(0, g.number_of_nodes(), dtype=torch.long), (g.in_degrees(range(g.number_of_nodes())) > 0))
             masked_index = torch.masked_select(
-                torch.arange(0, g.number_of_nodes(), dtype=torch.long).cuda(),
-                (g.in_degrees(range(g.number_of_nodes())) > 0))
+                torch.arange(0, g.number_of_nodes(), dtype=torch.long).cuda(),  # 选择的张量索引
+                (g.in_degrees(range(g.number_of_nodes())) > 0))  # 挑选的布尔掩码
             loop_message = torch.mm(g.ndata['h'], self.evolve_loop_weight)
             loop_message[masked_index, :] = torch.mm(g.ndata['h'], self.loop_weight)[masked_index, :]
         if len(prev_h) != 0 and self.skip_connect:
@@ -259,8 +273,11 @@ class UnionRGCNLayer(nn.Module):
         #     relation = self.rel_emb.index_select(0, edges.data['type_o']).view(-1, self.out_feat)
         # else:
         #     relation = self.rel_emb.index_select(0, edges.data['type_s']).view(-1, self.out_feat)
+        # 选择出特定关系类型的嵌入并reshape      （按行，类型）
         relation = self.rel_emb.index_select(0, edges.data['type']).view(-1, self.out_feat)
         edge_type = edges.data['type']
+        p = edges.src["p"]
+        edges.src['h'] = self.embedding_hp(torch.cat((edges.src['h'], p), dim=1))
         edge_num = edge_type.shape[0]
         node = edges.src['h'].view(-1, self.out_feat)
         # node = torch.cat([torch.matmul(node[:edge_num // 2, :], self.sub),
